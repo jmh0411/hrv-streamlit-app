@@ -1,5 +1,5 @@
-streamlit
-numpy
-pandas
-scipy
-plotly
+numpy>=1.23
+scipy>=1.10
+pandas>=2.0
+streamlit>=1.25
+plotly>=5.15
