@@ -3,7 +3,7 @@ import io
 import numpy as np
 import pandas as pd
 import streamlit as st
-from scipy import signal, interpolate, integrate
+from scipy import signal, interpolate
 
 # ------------------------------
 # 유틸 함수
@@ -82,7 +82,7 @@ def time_domain_metrics(rr_nn_ms):
 
 def frequency_domain_lfhf(rr_nn_ms, fs_resample=4.0):
     t = np.cumsum(rr_nn_ms) / 1000.0
-    t_uniform = np.arange(t[0], t[-1], 1.0 / fs_resample)
+    t_uniform = np.arange(t[0], t[-1], 1.0/fs_resample)
     kind = 'linear' if len(rr_nn_ms) < 4 else 'cubic'
     f_interp = interpolate.interp1d(t, rr_nn_ms, kind=kind, bounds_error=False, fill_value="extrapolate")
     rr_uniform = f_interp(t_uniform) - np.mean(rr_nn_ms)
@@ -90,13 +90,15 @@ def frequency_domain_lfhf(rr_nn_ms, fs_resample=4.0):
     if nperseg < 64:
         return np.nan, np.nan, np.nan, None, None
     freqs, pxx = signal.welch(rr_uniform, fs=fs_resample, window='hann', nperseg=nperseg, noverlap=nperseg//2, detrend=False, scaling='density')
+    
     def bandpower(f, p, fmin, fmax):
         mask = (f >= fmin) & (f < fmax)
         if not np.any(mask):
             return np.nan
-        return integrate.trapz(p[mask], f[mask])
+        return np.trapz(p[mask], f[mask])  # np.trapz 사용
+    
     lf = bandpower(freqs, pxx, 0.04, 0.15)
-    hf = bandpower(freqs, pxx, 0.15, 0.4)
+    hf = bandpower(freqs, pxx, 0.15, 0.40)
     lfhf = lf / hf if hf and hf > 0 else np.nan
     return lfhf, lf, hf, freqs, pxx
 
