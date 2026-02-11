@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.integrate import trapezoid
 import streamlit as st
 
 st.write("Numpy version:", np.__version__)
@@ -61,10 +62,16 @@ def freq_domain(rr_ms):
 
     f, pxx = welch(rr_interp, fs=fs, nperseg=256)
 
-    lf = np.trapz(pxx[(f >= 0.04) & (f < 0.15)],
-                  f[(f >= 0.04) & (f < 0.15)])
-    hf = np.trapz(pxx[(f >= 0.15) & (f < 0.40)],
-                  f[(f >= 0.15) & (f < 0.40)])
+   lf = trapezoid(
+    psd[(freq >= 0.04) & (freq < 0.15)],
+    freq[(freq >= 0.04) & (freq < 0.15)]
+)
+
+hf = trapezoid(
+    psd[(freq >= 0.15) & (freq < 0.4)],
+    freq[(freq >= 0.15) & (freq < 0.4)]
+)
+
 
     lf_hf = lf / hf if hf > 0 else np.nan
     return lf_hf
@@ -111,4 +118,5 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"분석 중 오류 발생: {e}")
+
 
