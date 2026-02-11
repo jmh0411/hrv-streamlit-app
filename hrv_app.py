@@ -1,21 +1,24 @@
 import numpy as np
+import pandas as pd
 import streamlit as st
 from scipy.signal import welch
 from scipy.interpolate import CubicSpline
 from scipy.integrate import trapezoid
+from scipy.stats import ttest_rel
 
-st.title("5-Minute HRV Analysis (Research Grade)")
+st.title("Pre–Post HRV Analysis (Research Grade)")
 
-uploaded_file = st.file_uploader("Upload RR interval file (.txt)", type=["txt"])
+remove_first_min = st.checkbox("Remove first 60 seconds (recommended)", value=True)
 
-# -----------------------------
-# Artifact correction
-# -----------------------------
+pre_file = st.file_uploader("Upload PRE RR file (.txt)", type=["txt"])
+post_file = st.file_uploader("Upload POST RR file (.txt)", type=["txt"])
+
+
+# -------------------------
+# Artifact Correction
+# -------------------------
 def artifact_correction(rr):
-
     rr = np.array(rr, dtype=float)
-
-    # physiological filtering
     rr = rr[(rr > 300) & (rr < 2000)]
 
     corrected = rr.copy()
@@ -28,39 +31,42 @@ def artifact_correction(rr):
             artifact_count += 1
 
     artifact_ratio = artifact_count / len(rr)
-
     return corrected, artifact_ratio
 
 
-# -----------------------------
-# HRV computation
-# -----------------------------
+# -------------------------
+# HRV Calculation
+# -------------------------
 def compute_hrv(rr):
 
     rr_corrected, artifact_ratio = artifact_correction(rr)
 
     if artifact_ratio > 0.05:
-        return None, "Artifact ratio >5% → 분석 제외"
+        return None, "Artifact ratio >5%"
 
-    # ----- Time Domain -----
+    # Remove first 60 sec
+    if remove_first_min:
+        t = np.cumsum(rr_corrected) / 1000
+        mask = t > 60
+        rr_corrected = rr_corrected[mask]
+
     mean_rr = np.mean(rr_corrected)
     mean_hr = 60000 / mean_rr
+
     sdnn = np.std(rr_corrected, ddof=1)
     diff_rr = np.diff(rr_corrected)
     rmssd = np.sqrt(np.mean(diff_rr**2))
-    pnn50 = np.sum(np.abs(diff_rr) > 50) / len(diff_rr) * 100
+    ln_rmssd = np.log(rmssd)
 
-    # ----- Frequency Domain -----
-    t = np.cumsum(rr_corrected) / 1000.0
+    # Frequency domain
+    t = np.cumsum(rr_corrected) / 1000
     t = t - t[0]
 
     fs = 4
     t_interp = np.arange(0, t[-1], 1/fs)
-
     cs = CubicSpline(t, rr_corrected)
     rr_interp = cs(t_interp)
 
-    # detrend
     rr_interp = rr_interp - np.polyval(np.polyfit(t_interp, rr_interp, 1), t_interp)
 
     f, pxx = welch(
@@ -72,41 +78,70 @@ def compute_hrv(rr):
         scaling='density'
     )
 
-    lf_band = (f >= 0.04) & (f < 0.15)
     hf_band = (f >= 0.15) & (f < 0.40)
-
-    lf_power = trapezoid(pxx[lf_band], f[lf_band])
     hf_power = trapezoid(pxx[hf_band], f[hf_band])
-    lf_hf_ratio = lf_power / hf_power if hf_power > 0 else np.nan
+    ln_hf = np.log(hf_power) if hf_power > 0 else np.nan
 
-    results = {
-        "Mean RR (ms)": round(mean_rr, 2),
-        "Mean HR (bpm)": round(mean_hr, 2),
-        "SDNN (ms)": round(sdnn, 2),
-        "RMSSD (ms)": round(rmssd, 2),
-        "pNN50 (%)": round(pnn50, 2),
-        "LF Power": round(lf_power, 6),
-        "HF Power": round(hf_power, 6),
-        "LF/HF Ratio": round(lf_hf_ratio, 3),
-        "Artifact Ratio (%)": round(artifact_ratio * 100, 2)
-    }
-
-    return results, None
+    return {
+        "Mean HR": mean_hr,
+        "RMSSD": rmssd,
+        "lnRMSSD": ln_rmssd,
+        "HF": hf_power,
+        "lnHF": ln_hf,
+        "SDNN": sdnn,
+        "Artifact %": artifact_ratio * 100
+    }, None
 
 
-# -----------------------------
-# Run analysis
-# -----------------------------
-if uploaded_file is not None:
+# -------------------------
+# Effect Size
+# -------------------------
+def cohens_d(pre, post):
+    diff = post - pre
+    return np.mean(diff) / np.std(diff, ddof=1)
 
-    rr = np.loadtxt(uploaded_file)
 
-    if st.button("Analyze HRV"):
+# -------------------------
+# Run Analysis
+# -------------------------
+if pre_file and post_file:
 
-        results, error = compute_hrv(rr)
+    pre_rr = np.loadtxt(pre_file)
+    post_rr = np.loadtxt(post_file)
 
-        if error:
-            st.error(error)
+    if st.button("Run Pre–Post Analysis"):
+
+        pre_results, pre_error = compute_hrv(pre_rr)
+        post_results, post_error = compute_hrv(post_rr)
+
+        if pre_error or post_error:
+            st.error("One dataset excluded due to artifact >5%")
         else:
+
+            variables = ["Mean HR", "RMSSD", "lnRMSSD", "HF", "lnHF", "SDNN"]
+
+            rows = []
+
+            for var in variables:
+                pre_val = pre_results[var]
+                post_val = post_results[var]
+                delta = post_val - pre_val
+
+                t_stat, p_val = ttest_rel([pre_val], [post_val])
+                d = cohens_d(np.array([pre_val]), np.array([post_val]))
+
+                rows.append([
+                    var,
+                    round(pre_val, 3),
+                    round(post_val, 3),
+                    round(delta, 3),
+                    round(p_val, 4),
+                    round(d, 3)
+                ])
+
+            df = pd.DataFrame(rows,
+                columns=["Variable", "Pre", "Post", "Δ", "p-value", "Cohen's d"]
+            )
+
             st.success("Analysis Complete")
-            st.write(results)
+            st.dataframe(df)
