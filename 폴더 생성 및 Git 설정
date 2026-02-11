@@ -1,0 +1,15 @@
+# 1. 작업할 폴더로 이동 (예: 바탕화면)
+cd C:\Users\[your-username]\Desktop
+
+# 2. 프로젝트 폴더 생성
+mkdir hrv-analysis-app
+cd hrv-analysis-app
+
+# 3. Git 초기화
+git init
+
+# 4. GitHub 레포지토리 연결
+git remote add origin https://github.com/[your-username]/hrv-analysis-app.git
+
+# 5. 기본 브랜치 이름을 main으로 설정
+git branch -M main
