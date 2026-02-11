@@ -1,188 +1,125 @@
-import numpy as np
-import pandas as pd
 import streamlit as st
-from scipy.signal import welch
-from scipy.interpolate import CubicSpline
-from scipy.integrate import trapezoid
-from scipy.stats import ttest_rel
+import pandas as pd
+import numpy as np
 
-st.title("Group HRV Pre–Post Analysis (Research Grade)")
+st.title("HRV Research Data Manager")
 
 # -----------------------------
-# Session State Initialization
+# 세션 초기화
 # -----------------------------
-if "data" not in st.session_state:
-    st.session_state.data = pd.DataFrame()
-
-remove_first_min = st.checkbox("Remove first 60 seconds", value=True)
-
-participant_id = st.text_input("Participant ID (e.g., P01)")
-
-condition = st.selectbox("Condition", ["PRE", "POST"])
-
-uploaded_file = st.file_uploader("Upload RR interval (.txt)", type=["txt"])
-
+if "dataset" not in st.session_state:
+    st.session_state.dataset = pd.DataFrame()
 
 # -----------------------------
-# Artifact Correction
+# ID 입력
 # -----------------------------
-def artifact_correction(rr):
-    rr = np.array(rr, dtype=float)
-    rr = rr[(rr > 300) & (rr < 2000)]
+st.subheader("Participant ID")
 
-    corrected = rr.copy()
-    artifact_count = 0
-
-    for i in range(2, len(rr)-2):
-        local_median = np.median(rr[i-2:i+3])
-        if abs(rr[i] - local_median) > 0.20 * local_median:
-            corrected[i] = local_median
-            artifact_count += 1
-
-    artifact_ratio = artifact_count / len(rr)
-    return corrected, artifact_ratio
-
+participant_id = st.text_input("Enter Participant ID")
 
 # -----------------------------
-# HRV Calculation
+# HRV 값 입력
 # -----------------------------
-def compute_hrv(rr):
+st.subheader("HRV Metrics")
 
-    rr_corrected, artifact_ratio = artifact_correction(rr)
-
-    if artifact_ratio > 0.05:
-        return None
-
-    if remove_first_min:
-        t = np.cumsum(rr_corrected) / 1000
-        rr_corrected = rr_corrected[t > 60]
-
-    mean_rr = np.mean(rr_corrected)
-    mean_hr = 60000 / mean_rr
-
-    sdnn = np.std(rr_corrected, ddof=1)
-    diff_rr = np.diff(rr_corrected)
-    rmssd = np.sqrt(np.mean(diff_rr**2))
-    ln_rmssd = np.log(rmssd)
-
-    # Frequency (HF only)
-    t = np.cumsum(rr_corrected) / 1000
-    t -= t[0]
-
-    fs = 4
-    t_interp = np.arange(0, t[-1], 1/fs)
-    cs = CubicSpline(t, rr_corrected)
-    rr_interp = cs(t_interp)
-
-    rr_interp -= np.polyval(np.polyfit(t_interp, rr_interp, 1), t_interp)
-
-    f, pxx = welch(
-        rr_interp,
-        fs=fs,
-        window='hamming',
-        nperseg=256,
-        noverlap=128,
-        scaling='density'
-    )
-
-    hf_band = (f >= 0.15) & (f < 0.40)
-    hf_power = trapezoid(pxx[hf_band], f[hf_band])
-    ln_hf = np.log(hf_power) if hf_power > 0 else np.nan
-
-    return {
-        "Mean_HR": mean_hr,
-        "RMSSD": rmssd,
-        "lnRMSSD": ln_rmssd,
-        "HF": hf_power,
-        "lnHF": ln_hf,
-        "SDNN": sdnn,
-        "Artifact_%": artifact_ratio * 100
-    }
-
+mean_rr = st.number_input("Mean RR (ms)", value=0.0)
+mean_hr = st.number_input("Mean HR (bpm)", value=0.0)
+sdnn = st.number_input("SDNN (ms)", value=0.0)
+rmssd = st.number_input("RMSSD (ms)", value=0.0)
+pnn50 = st.number_input("pNN50 (%)", value=0.0)
+lf = st.number_input("LF Power", value=0.0)
+hf = st.number_input("HF Power", value=0.0)
+lfhf = st.number_input("LF/HF Ratio", value=0.0)
 
 # -----------------------------
-# Upload & Save
+# 저장 (중복 방지 + 업데이트 구조)
 # -----------------------------
-if uploaded_file and participant_id:
+if st.button("Save / Update Participant"):
 
-    rr = np.loadtxt(uploaded_file)
-    results = compute_hrv(rr)
-
-    if results is None:
-        st.error("Artifact >5% → excluded")
+    if participant_id == "":
+        st.warning("ID를 입력하세요.")
     else:
-        results["ID"] = participant_id
-        results["Condition"] = condition
 
-        st.session_state.data = pd.concat(
-            [st.session_state.data, pd.DataFrame([results])],
-            ignore_index=True
-        )
+        new_data = {
+            "ID": participant_id,
+            "Mean RR (ms)": mean_rr,
+            "Mean HR (bpm)": mean_hr,
+            "SDNN (ms)": sdnn,
+            "RMSSD (ms)": rmssd,
+            "pNN50 (%)": pnn50,
+            "LF Power": lf,
+            "HF Power": hf,
+            "LF/HF Ratio": lfhf
+        }
 
-        st.success("Data Saved")
+        df = st.session_state.dataset
 
-
-# -----------------------------
-# Display Data
-# -----------------------------
-if not st.session_state.data.empty:
-    st.subheader("Accumulated Dataset")
-    st.dataframe(st.session_state.data)
-
-    csv = st.session_state.data.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download Full Dataset CSV",
-        csv,
-        "hrv_group_dataset.csv",
-        "text/csv"
-    )
-
-
-# -----------------------------
-# Group Statistics
-# -----------------------------
-if not st.session_state.data.empty:
-
-    df = st.session_state.data
-
-    if set(["PRE", "POST"]).issubset(df["Condition"].unique()):
-
-        st.subheader("Group Pre–Post Statistics")
-
-        pre = df[df["Condition"] == "PRE"].set_index("ID")
-        post = df[df["Condition"] == "POST"].set_index("ID")
-
-        common_ids = pre.index.intersection(post.index)
-
-        if len(common_ids) > 1:
-
-            results_table = []
-
-            variables = ["Mean_HR", "RMSSD", "lnRMSSD", "HF", "lnHF", "SDNN"]
-
-            for var in variables:
-                pre_vals = pre.loc[common_ids, var]
-                post_vals = post.loc[common_ids, var]
-
-                delta = post_vals - pre_vals
-                t_stat, p_val = ttest_rel(pre_vals, post_vals)
-
-                d = delta.mean() / delta.std(ddof=1)
-
-                results_table.append([
-                    var,
-                    round(pre_vals.mean(), 3),
-                    round(post_vals.mean(), 3),
-                    round(delta.mean(), 3),
-                    round(p_val, 4),
-                    round(d, 3)
-                ])
-
-            stats_df = pd.DataFrame(
-                results_table,
-                columns=["Variable", "Pre Mean", "Post Mean", "Δ Mean", "p-value", "Cohen's d"]
-            )
-
-            st.dataframe(stats_df)
+        # ID 존재 여부 확인
+        if participant_id in df["ID"].values:
+            # 업데이트
+            df.loc[df["ID"] == participant_id] = new_data
+            st.success("기존 데이터 업데이트 완료")
         else:
-            st.info("Need at least 2 matched participants for group statistics.")
+            # 새로 추가
+            df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
+            st.session_state.dataset = df
+            st.success("새 데이터 저장 완료")
+
+# -----------------------------
+# 현재 데이터 표시
+# -----------------------------
+st.subheader("Current Dataset")
+
+if not st.session_state.dataset.empty:
+    st.dataframe(st.session_state.dataset)
+
+# -----------------------------
+# 삭제 기능
+# -----------------------------
+st.subheader("Delete Participant")
+
+delete_id = st.text_input("삭제할 ID 입력")
+
+if st.button("Delete"):
+
+    df = st.session_state.dataset
+
+    if delete_id in df["ID"].values:
+        df = df[df["ID"] != delete_id]
+        st.session_state.dataset = df.reset_index(drop=True)
+        st.success("삭제 완료")
+    else:
+        st.warning("해당 ID 없음")
+
+# -----------------------------
+# 그룹 통계 자동 계산
+# -----------------------------
+st.subheader("Group Statistics")
+
+if not st.session_state.dataset.empty:
+
+    numeric_df = st.session_state.dataset.drop(columns=["ID"])
+
+    stats = pd.DataFrame({
+        "Mean": numeric_df.mean(),
+        "SD": numeric_df.std(),
+        "Min": numeric_df.min(),
+        "Max": numeric_df.max()
+    })
+
+    st.dataframe(stats)
+
+# -----------------------------
+# CSV 다운로드
+# -----------------------------
+st.subheader("Download Full Dataset")
+
+if not st.session_state.dataset.empty:
+    csv = st.session_state.dataset.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        label="Download Full Dataset CSV",
+        data=csv,
+        file_name="hrv_full_dataset.csv",
+        mime="text/csv"
+    )
