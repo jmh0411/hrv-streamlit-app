@@ -1,3 +1,9 @@
+import numpy as np
+import streamlit as st
+
+st.write("Numpy version:", np.__version__)
+st.write("Has trapz:", hasattr(np, "trapz"))
+
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -105,3 +111,4 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"분석 중 오류 발생: {e}")
+
