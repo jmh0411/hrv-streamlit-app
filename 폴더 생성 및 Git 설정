@@ -13,3 +13,14 @@ git remote add origin https://github.com/[your-username]/hrv-analysis-app.git
 
 # 5. 기본 브랜치 이름을 main으로 설정
 git branch -M main
+# 폴더 생성
+mkdir data
+mkdir .streamlit
+
+# 파일 생성 (비어있는 파일)
+New-Item -ItemType File -Name "requirements.txt"
+New-Item -ItemType File -Name "config.py"
+New-Item -ItemType File -Name "hrv_analyzer.py"
+New-Item -ItemType File -Name "utils.py"
+New-Item -ItemType File -Name "app.py"
+New-Item -ItemType File -Name ".gitignore"
