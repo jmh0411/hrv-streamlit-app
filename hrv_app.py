@@ -4,14 +4,17 @@ import streamlit as st
 from scipy.signal import welch
 from scipy.interpolate import CubicSpline
 from scipy.integrate import trapezoid
-from scipy.stats import ttest_rel
 
-st.title("Pre–Post HRV Analysis (Research Grade)")
+st.title("Single Upload HRV Analysis (Pre–Post)")
 
 remove_first_min = st.checkbox("Remove first 60 seconds (recommended)", value=True)
 
-pre_file = st.file_uploader("Upload PRE RR file (.txt)", type=["txt"])
-post_file = st.file_uploader("Upload POST RR file (.txt)", type=["txt"])
+uploaded_file = st.file_uploader("Upload RR interval file (.txt)", type=["txt"])
+
+if "pre_data" not in st.session_state:
+    st.session_state.pre_data = None
+if "post_data" not in st.session_state:
+    st.session_state.post_data = None
 
 
 # -------------------------
@@ -44,11 +47,9 @@ def compute_hrv(rr):
     if artifact_ratio > 0.05:
         return None, "Artifact ratio >5%"
 
-    # Remove first 60 sec
     if remove_first_min:
         t = np.cumsum(rr_corrected) / 1000
-        mask = t > 60
-        rr_corrected = rr_corrected[mask]
+        rr_corrected = rr_corrected[t > 60]
 
     mean_rr = np.mean(rr_corrected)
     mean_hr = 60000 / mean_rr
@@ -58,7 +59,7 @@ def compute_hrv(rr):
     rmssd = np.sqrt(np.mean(diff_rr**2))
     ln_rmssd = np.log(rmssd)
 
-    # Frequency domain
+    # Frequency domain (HF only)
     t = np.cumsum(rr_corrected) / 1000
     t = t - t[0]
 
@@ -94,54 +95,56 @@ def compute_hrv(rr):
 
 
 # -------------------------
-# Effect Size
+# Upload Handling
 # -------------------------
-def cohens_d(pre, post):
-    diff = post - pre
-    return np.mean(diff) / np.std(diff, ddof=1)
+if uploaded_file is not None:
+
+    rr = np.loadtxt(uploaded_file)
+
+    results, error = compute_hrv(rr)
+
+    if error:
+        st.error(error)
+    else:
+        st.success("Analysis Complete")
+        st.write(results)
+
+        col1, col2 = st.columns(2)
+
+        if col1.button("Save as PRE"):
+            st.session_state.pre_data = results
+            st.success("Saved as PRE")
+
+        if col2.button("Save as POST"):
+            st.session_state.post_data = results
+            st.success("Saved as POST")
 
 
 # -------------------------
-# Run Analysis
+# Comparison
 # -------------------------
-if pre_file and post_file:
+if st.session_state.pre_data and st.session_state.post_data:
 
-    pre_rr = np.loadtxt(pre_file)
-    post_rr = np.loadtxt(post_file)
+    st.subheader("Pre–Post Comparison")
 
-    if st.button("Run Pre–Post Analysis"):
+    variables = ["Mean HR", "RMSSD", "lnRMSSD", "HF", "lnHF", "SDNN"]
 
-        pre_results, pre_error = compute_hrv(pre_rr)
-        post_results, post_error = compute_hrv(post_rr)
+    rows = []
 
-        if pre_error or post_error:
-            st.error("One dataset excluded due to artifact >5%")
-        else:
+    for var in variables:
+        pre_val = st.session_state.pre_data[var]
+        post_val = st.session_state.post_data[var]
+        delta = post_val - pre_val
 
-            variables = ["Mean HR", "RMSSD", "lnRMSSD", "HF", "lnHF", "SDNN"]
+        rows.append([
+            var,
+            round(pre_val, 3),
+            round(post_val, 3),
+            round(delta, 3)
+        ])
 
-            rows = []
+    df = pd.DataFrame(rows,
+        columns=["Variable", "Pre", "Post", "Δ"]
+    )
 
-            for var in variables:
-                pre_val = pre_results[var]
-                post_val = post_results[var]
-                delta = post_val - pre_val
-
-                t_stat, p_val = ttest_rel([pre_val], [post_val])
-                d = cohens_d(np.array([pre_val]), np.array([post_val]))
-
-                rows.append([
-                    var,
-                    round(pre_val, 3),
-                    round(post_val, 3),
-                    round(delta, 3),
-                    round(p_val, 4),
-                    round(d, 3)
-                ])
-
-            df = pd.DataFrame(rows,
-                columns=["Variable", "Pre", "Post", "Δ", "p-value", "Cohen's d"]
-            )
-
-            st.success("Analysis Complete")
-            st.dataframe(df)
+    st.dataframe(df)
