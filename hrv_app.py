@@ -1,158 +1,126 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
+from scipy import interpolate
 from scipy.signal import welch
-from scipy.integrate import trapezoid
 
-st.title("HRV Research Analysis System")
+# ===============================
+# 안전한 RR 전처리
+# ===============================
+def preprocess_rr(rr_series):
+    rr = pd.to_numeric(rr_series, errors="coerce")
 
-# -----------------------------
-# 세션 초기화
-# -----------------------------
-if "dataset" not in st.session_state:
-    st.session_state.dataset = pd.DataFrame()
+    total_n = len(rr)
 
-# -----------------------------
-# RR 업로드
-# -----------------------------
-st.subheader("Upload RR Interval CSV (ms)")
+    # 1) 생리적 범위
+    rr[(rr < 300) | (rr > 2000)] = np.nan
 
-uploaded_file = st.file_uploader("Upload RR data", type=["csv"])
+    # 2) 인접 변화율 20% 초과
+    diff_ratio = rr.diff().abs() / rr.shift(1)
+    rr[diff_ratio > 0.20] = np.nan
 
-participant_id = st.text_input("Participant ID")
+    removed_n = rr.isna().sum()
+    removed_ratio = removed_n / total_n if total_n > 0 else 0
 
-# -----------------------------
-# HRV 계산 함수
-# -----------------------------
-def calculate_hrv(rr):
+    # 선형 보간
+    rr_interp = rr.interpolate(method="linear", limit_direction="both")
 
-    rr = np.array(rr, dtype=float)
+    valid_n = rr_interp.notna().sum()
 
-    # Artifact 제거 (Kubios guideline 기반 physiological filter)
-    rr = rr[(rr > 300) & (rr < 2000)]
+    return rr_interp.values, total_n, removed_n, removed_ratio, valid_n
 
-    if len(rr) < 60:
-        return None
 
-    mean_rr = np.mean(rr)
-    mean_hr = 60000 / mean_rr
-    sdnn = np.std(rr, ddof=1)
+# ===============================
+# 시간영역
+# ===============================
+def time_domain(rr_ms):
+    if len(rr_ms) < 2:
+        return np.nan, np.nan
+    sdnn = np.std(rr_ms, ddof=1)
+    rmssd = np.sqrt(np.mean(np.diff(rr_ms) ** 2))
+    return sdnn, rmssd
 
-    diff_rr = np.diff(rr)
-    rmssd = np.sqrt(np.mean(diff_rr**2))
-    pnn50 = np.sum(np.abs(diff_rr) > 50) / len(diff_rr) * 100
 
-    # --- Frequency domain (Welch)
-    time_axis = np.cumsum(rr) / 1000
-    fs = 4
-    interpolated_time = np.arange(0, time_axis[-1], 1/fs)
-    interpolated_rr = np.interp(interpolated_time, time_axis, rr)
+# ===============================
+# 주파수영역 (안전 버전)
+# ===============================
+def freq_domain(rr_ms):
+    if len(rr_ms) < 240:
+        return np.nan
 
-    f, pxx = welch(interpolated_rr, fs=fs, nperseg=256)
+    rr_sec = rr_ms / 1000.0
+    t = np.cumsum(rr_sec)
+    t -= t[0]
 
-    lf_band = (f >= 0.04) & (f <= 0.15)
-    hf_band = (f >= 0.15) & (f <= 0.4)
+    if t[-1] <= 0:
+        return np.nan
 
-    lf = trapezoid(pxx[lf_band], f[lf_band])
-    hf = trapezoid(pxx[hf_band], f[hf_band])
+    fs = 4.0
+    try:
+        interp_func = interpolate.interp1d(
+            t, rr_sec, kind="linear", fill_value="extrapolate"
+        )
+        t_interp = np.arange(0, t[-1], 1/fs)
+        rr_interp = interp_func(t_interp)
 
-    lfhf = lf / hf if hf != 0 else np.nan
+        f, pxx = welch(rr_interp, fs=fs, nperseg=min(256, len(rr_interp)))
 
-    return {
-        "Mean RR (ms)": round(mean_rr,2),
-        "Mean HR (bpm)": round(mean_hr,2),
-        "SDNN (ms)": round(sdnn,2),
-        "RMSSD (ms)": round(rmssd,2),
-        "pNN50 (%)": round(pnn50,2),
-        "LF Power": round(lf,2),
-        "HF Power": round(hf,2),
-        "LF/HF Ratio": round(lfhf,2)
-    }
+        lf = np.trapz(pxx[(f >= 0.04) & (f < 0.15)],
+                      f[(f >= 0.04) & (f < 0.15)])
+        hf = np.trapz(pxx[(f >= 0.15) & (f < 0.40)],
+                      f[(f >= 0.15) & (f < 0.40)])
 
-# -----------------------------
-# 분석 실행
-# -----------------------------
-if uploaded_file and participant_id:
+        if hf == 0:
+            return np.nan
 
-    df = pd.read_csv(uploaded_file)
+        return lf / hf
 
-    rr_column = df.columns[0]
-    rr_data = df[rr_column].dropna()
+    except:
+        return np.nan
 
-    results = calculate_hrv(rr_data)
 
-    if results is None:
-        st.error("RR 데이터 길이 부족 또는 품질 문제")
-    else:
-        st.subheader("Calculated HRV Results")
-        st.json(results)
+# ===============================
+# Streamlit UI
+# ===============================
+st.set_page_config(page_title="5분 HRV 분석", layout="centered")
 
-        if st.button("Save / Update Participant"):
+st.title("📊 5분 HRV 분석 (단일 RR 파일)")
 
-            results["ID"] = participant_id
-            new_df = pd.DataFrame([results])
+st.markdown("""
+**파일 조건**
+- .txt 파일
+- 단위: ms
+- 한 줄에 RR 값 1개
+""")
 
-            dataset = st.session_state.dataset
+uploaded_file = st.file_uploader("RR 데이터 파일 업로드", type=["txt"])
 
-            if not dataset.empty and participant_id in dataset["ID"].values:
-                dataset.loc[dataset["ID"] == participant_id] = new_df.values
-                st.success("기존 데이터 업데이트 완료")
-            else:
-                dataset = pd.concat([dataset, new_df], ignore_index=True)
-                st.session_state.dataset = dataset
-                st.success("새 데이터 저장 완료")
+if uploaded_file is not None:
+    try:
+        rr_df = pd.read_csv(uploaded_file, header=None)
+        rr_series = rr_df.iloc[:, 0]
 
-# -----------------------------
-# 현재 데이터 표시
-# -----------------------------
-st.subheader("Current Dataset")
+        rr_clean, total_n, removed_n, removed_ratio, valid_n = preprocess_rr(rr_series)
 
-if not st.session_state.dataset.empty:
-    st.dataframe(st.session_state.dataset)
+        st.subheader("📌 데이터 품질 요약")
+        st.write(f"총 RR 개수: {total_n}")
+        st.write(f"제거/보간 RR 개수: {removed_n}")
+        st.write(f"제거 비율: {removed_ratio*100:.2f}%")
+        st.write(f"유효 RR 개수: {valid_n}")
 
-# -----------------------------
-# 삭제 기능
-# -----------------------------
-delete_id = st.text_input("삭제할 ID 입력")
+        sdnn, rmssd = time_domain(rr_clean)
+        lf_hf = freq_domain(rr_clean)
 
-if st.button("Delete Participant"):
+        st.subheader("✅ HRV 계산 결과")
 
-    df = st.session_state.dataset
+        if removed_ratio <= 0.05:
+            st.success("✔ 논문 분석 기준 통과 (≤5%)")
+        else:
+            st.warning("⚠ 5% 초과 — 논문용 분석은 권장되지 않음 (참고용 결과)")
 
-    if delete_id in df["ID"].values:
-        df = df[df["ID"] != delete_id]
-        st.session_state.dataset = df.reset_index(drop=True)
-        st.success("삭제 완료")
-    else:
-        st.warning("해당 ID 없음")
+        st.metric("SDNN (ms)", f"{sdnn:.2f}" if not np.isnan(sdnn) else "계산 불가")
+        st.metric("RMSSD (ms)", f"{rmssd:.2f}" if not np.isnan(rmssd) else "계산 불가")
+        st.metric("LF/HF", f"{lf_hf:.2f}" if not np.isnan(lf_hf) else "계산 불가")
 
-# -----------------------------
-# 그룹 통계
-# -----------------------------
-st.subheader("Group Statistics")
-
-if not st.session_state.dataset.empty:
-
-    numeric_df = st.session_state.dataset.drop(columns=["ID"])
-
-    stats = pd.DataFrame({
-        "Mean": numeric_df.mean(),
-        "SD": numeric_df.std(),
-        "Min": numeric_df.min(),
-        "Max": numeric_df.max()
-    })
-
-    st.dataframe(stats)
-
-# -----------------------------
-# CSV 다운로드
-# -----------------------------
-if not st.session_state.dataset.empty:
-    csv = st.session_state.dataset.to_csv(index=False).encode("utf-8")
-
-    st.download_button(
-        label="Download Full Dataset CSV",
-        data=csv,
-        file_name="hrv_full_dataset.csv",
-        mime="text/csv"
-    )
+    except Exception as e:
+        st.error(f"파일 처리 중 오류 발생: {e}")
