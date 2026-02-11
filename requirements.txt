@@ -2,4 +2,3 @@ streamlit
 numpy==1.26.4
 pandas
 scipy
-neurokit2
